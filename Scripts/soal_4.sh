@@ -1,6 +1,37 @@
 #Prabs
-nano /etc/bind/jarkom/k19.com
+apt update -o Acquire::ForceIPv4=true
+apt install bind9 dnsutils -y -o Acquire::ForceIPv4=true
 
+# Set Forwarders di /etc/bind/named.conf.options
+cat << 'EOF' > /etc/bind/named.conf.options
+options {
+        directory "/var/cache/bind";
+
+        forwarders {
+                192.168.122.1;
+        };
+
+        allow-query { any; };
+        dnssec-validation auto;
+        listen-on-v6 { any; };
+};
+EOF
+
+# Zone Master di /etc/bind/named.conf.local
+cat << 'EOF' > /etc/bind/named.conf.local
+zone "k19.com" {
+    type master;
+    file "/etc/bind/jarkom/k19.com";
+    allow-transfer { 10.73.10.3; };
+    also-notify { 10.73.10.3; };
+    notify yes;
+};
+EOF
+
+mkdir -p /etc/bind/jarkom
+
+# File Zone minimal untuk Soal 4
+cat << 'EOF' > /etc/bind/jarkom/k19.com
 $TTL    604800
 @       IN      SOA     prab.k19.com. root.k19.com. (
                         2026092801 ; Serial
@@ -13,46 +44,49 @@ $TTL    604800
 @       IN      NS      prab.k19.com.
 @       IN      NS      tedd.k19.com.
 
-; Apex Domain (Gerbang Aplikasi Dinamis - Penny)
+; Apex Domain (Penny)
 @       IN      A       10.73.30.2
 
 ; Host Utama BIND9
 prab    IN      A       10.73.10.2
 tedd    IN      A       10.73.10.3
+EOF
 
-; Gerbang Aplikasi / Penyaring
-abbey   IN      A       10.73.20.2
-penny   IN      A       10.73.30.2
-
-; Repository Vault (Load Balancing Round Robin - Obladi & Desmond)
-vault   IN      A       10.73.10.4
-vault   IN      A       10.73.10.5
-
-; Repository Core (Load Balancing Round Robin - Oblada & Molly)
-core    IN      A       10.73.10.6
-core    IN      A       10.73.10.7
-
-; Alias CNAME
-www     IN      CNAME   penny.k19.com.
-static  IN      CNAME   abbey.k19.com.
-
-; Operator Clients
-alpha   IN      A       10.73.40.2
-beta    IN      A       10.73.40.3
-gamma   IN      A       10.73.40.4
-delta   IN      A       10.73.50.2
-epsilon IN      A       10.73.50.3
-
-named-checkzone k19.com /etc/bind/jarkom/k19.com
+chown -R bind:bind /etc/bind/jarkom
 service named restart
 
 #Tedd
+apt update -o Acquire::ForceIPv4=true
+apt install bind9 dnsutils -y -o Acquire::ForceIPv4=true
+
+# Set Forwarders di /etc/bind/named.conf.options
+cat << 'EOF' > /etc/bind/named.conf.options
+options {
+        directory "/var/cache/bind";
+
+        forwarders {
+                192.168.122.1;
+        };
+
+        allow-query { any; };
+        dnssec-validation auto;
+        listen-on-v6 { any; };
+};
+EOF
+
+# Zone Slave di /etc/bind/named.conf.local
+cat << 'EOF' > /etc/bind/named.conf.local
+zone "k19.com" {
+    type slave;
+    masters { 10.73.10.2; };
+    file "/var/lib/bind/k19.com";
+};
+EOF
+
 service named restart
 
 #Alpha
-host -t CNAME www.k19.com
-host -t CNAME static.k19.com
-host vault.k19.com
-host core.k19.com
-host alpha.k19.com
-host delta.k19.com
+# Uji IP Apex Domain & Name Server
+host -t A k19.com
+host prab.k19.com
+host tedd.k19.com

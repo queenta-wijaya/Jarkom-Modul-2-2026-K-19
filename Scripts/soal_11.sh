@@ -1,31 +1,30 @@
 #penny 
-apt update -o Acquire::ForceIPv4=true
+aapt update -o Acquire::ForceIPv4=true
 apt install apache2 -y -o Acquire::ForceIPv4=true
 
 a2enmod proxy proxy_http proxy_balancer lbmethod_byrequests headers
 a2dissite 000-default 2>/dev/null
 
-cat << 'XEOF' > /etc/apache2/sites-available/reverse-proxy.conf
+cat << 'XEOF' > /etc/apache2/sites-available/10-www.conf
 <VirtualHost *:80>
     ServerName www.k19.com
 
     ProxyRequests Off
     ProxyPreserveHost On
-    RequestHeader set X-Real-IP "%{REMOTE_ADDR}s"
-    RequestHeader set X-Forwarded-For "%{REMOTE_ADDR}s"
+    RequestHeader set X-Real-IP expr=%{REMOTE_ADDR}
 
-    <Proxy "balancer://vaultcluster">
+    <Proxy "balancer://vault">
         BalancerMember http://10.73.10.4:80
         BalancerMember http://10.73.10.5:80
         ProxySet lbmethod=byrequests
     </Proxy>
 
-    ProxyPass / balancer://vaultcluster/
-    ProxyPassReverse / balancer://vaultcluster/
+    ProxyPass        "/" "balancer://vault/"
+    ProxyPassReverse "/" "balancer://vault/"
 </VirtualHost>
 XEOF
 
-a2ensite reverse-proxy
+a2ensite 10-www
 apachectl configtest
 service apache2 restart
 
@@ -38,15 +37,15 @@ apt install nginx -y -o Acquire::ForceIPv4=true
 
 rm -f /etc/nginx/sites-enabled/default
 
-cat << 'XEOF' > /etc/nginx/conf.d/abbey.conf
+cat << 'XEOF' > /etc/nginx/sites-available/reverse-proxy
 upstream core {
-    server 10.73.10.6;
-    server 10.73.10.7;
+    server 10.73.10.6:80;
+    server 10.73.10.7:80;
 }
 
 server {
     listen 80;
-    server_name static.k19.com abbey.k19.com;
+    server_name static.k19.com;
 
     location / {
         proxy_pass http://core;
@@ -57,6 +56,7 @@ server {
 }
 XEOF
 
+ln -sf /etc/nginx/sites-available/reverse-proxy /etc/nginx/sites-enabled/reverse-proxy
 nginx -t
 pgrep -x nginx > /dev/null && nginx -s reload || nginx
 

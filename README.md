@@ -223,7 +223,24 @@ up echo "nameserver 192.168.122.1" > /etc/resolv.conf
 ![img](assets/soal_3-1.png)<br>
 ![img](assets/soal_3-2.png)<br>
 ## Soal 4
-Pertama-tama download bind9 di node Prab
+Pertama-tama set hostname ke seluruh node terlebih dahulu
+```bash
+hostname rootkit && echo "rootkit" > /etc/hostname
+hostname prab && echo "prab" > /etc/hostname
+hostname tedd && echo "tedd" > /etc/hostname
+hostname alpha && echo "alpha" > /etc/hostname
+hostname beta && echo "beta" > /etc/hostname
+hostname gamma && echo "gamma" > /etc/hostname
+hostname delta && echo "delta" > /etc/hostname
+hostname epsilon && echo "epsilon" > /etc/hostname
+hostname abbey && echo "abbey" > /etc/hostname
+hostname penny && echo "penny" > /etc/hostname
+hostname obladi && echo "obladi" > /etc/hostname
+hostname desmond && echo "desmond" > /etc/hostname
+hostname oblada && echo "oblada" > /etc/hostname
+hostname molly && echo "molly" > /etc/hostname
+```
+Selanjutnya download bind9 di node Prab
 ```bash
 apt update -o Acquire::ForceIPv4=true
 apt install bind9 dnsutils -y -o Acquire::ForceIPv4=true

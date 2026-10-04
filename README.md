@@ -701,12 +701,628 @@ curl http://core.k19.com/profil
 ```
 ![img](assets/soal_10.png)<br>
 ## Soal 11
+Penny (Apache2) dan Abbey (Nginx) dikonfigurasi sebagai reverse proxy. Penny meneruskan request ke area vault (Obladi dan Desmond), dan Abbey meneruskan ke area core (Oblada dan Molly). Keduanya meneruskan header Host dan IP asli pengunjung supaya server backend tetap tahu alamat yang diminta dan siapa pengunjungnya
+Pertama lakukan konfigurasi di Penny (Apache2, proxy ke vault)
+```bash
+apt update -o Acquire::ForceIPv4=true
+apt install apache2 -y -o Acquire::ForceIPv4=true
+
+a2enmod proxy proxy_http proxy_balancer lbmethod_byrequests headers
+a2dissite 000-default 2>/dev/null
+
+cat << 'XEOF' > /etc/apache2/sites-available/10-www.conf
+<VirtualHost *:80>
+    ServerName www.k19.com
+
+    ProxyRequests Off
+    ProxyPreserveHost On
+    RequestHeader set X-Real-IP expr=%{REMOTE_ADDR}
+
+    <Proxy "balancer://vault">
+        BalancerMember http://10.73.10.4:80
+        BalancerMember http://10.73.10.5:80
+        ProxySet lbmethod=byrequests
+    </Proxy>
+
+    ProxyPass        "/" "balancer://vault/"
+    ProxyPassReverse "/" "balancer://vault/"
+</VirtualHost>
+XEOF
+
+a2ensite 10-www
+apachectl configtest
+service apache2 restart
+```
+`ProxyPreserveHost On` meneruskan header `Host` asli, `RequestHeader set X-Real-IP` mengirim IP pengunjung, dan `X-Forwarded-For` ditambahkan otomatis oleh `mod_proxy`. `balancer://vault` membagi request ke Obladi dan Desmond secara bergantian.
+
+Kemudian lakukan konfigurasi di Abbey (Nginx, proxy ke core)
+```bash
+apt update -o Acquire::ForceIPv4=true
+apt install nginx -y -o Acquire::ForceIPv4=true
+
+rm -f /etc/nginx/sites-enabled/default
+
+cat << 'XEOF' > /etc/nginx/sites-available/reverse-proxy
+upstream core {
+    server 10.73.10.6:80;
+    server 10.73.10.7:80;
+}
+
+server {
+    listen 80;
+    server_name static.k19.com;
+
+    location / {
+        proxy_pass http://core;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+XEOF
+
+ln -sf /etc/nginx/sites-available/reverse-proxy /etc/nginx/sites-enabled/reverse-proxy
+nginx -t
+pgrep -x nginx > /dev/null && nginx -s reload || nginx
+```
+`upstream core` berisi Oblada dan Molly, dan tiga baris `proxy_set_header` meneruskan `Host` serta IP asli pengunjung ke backend.
+
+Terakhir lakukan testing di node Alpha
+```bash
+for i in 1 2 3 4 5 6; do curl -s -o /dev/null -w "%{http_code}\n" http://www.k19.com/arsip/; done
+curl -s http://static.k19.com/profil
+```
+![img](assets/soal_11-2.png)
 ## Soal 12
+meminta halaman `/admin` di Penny hanya bisa dibuka oleh pengguna yang punya kredensial. Caranya memakai *Basic Authentication*
+Pertama lakukan konfigurasi di Penny (Apache2)
+```bash
+apt install apache2-utils -y -o Acquire::ForceIPv4=true
+a2enmod authn_file auth_basic authz_user
+
+htpasswd -b -c /etc/apache2/.htpasswd prabs 'pakar_pinter_jadi_gob***'
+
+cat << 'XEOF' > /etc/apache2/sites-available/10-www.conf
+<VirtualHost *:80>
+    ServerName www.k19.com
+
+    ProxyRequests Off
+    ProxyPreserveHost On
+    RequestHeader set X-Real-IP expr=%{REMOTE_ADDR}
+
+    <Location "/admin">
+        AuthType Basic
+        AuthName "Admin Area"
+        AuthUserFile /etc/apache2/.htpasswd
+        Require valid-user
+    </Location>
+
+    <Proxy "balancer://vault">
+        BalancerMember http://10.73.10.4:80
+        BalancerMember http://10.73.10.5:80
+        ProxySet lbmethod=byrequests
+    </Proxy>
+
+    ProxyPass        "/" "balancer://vault/"
+    ProxyPassReverse "/" "balancer://vault/"
+</VirtualHost>
+XEOF
+
+apachectl configtest
+service apache2 restart
+```
+`htpasswd` menyimpan username dan password (terenkripsi) ke file `/etc/apache2/.htpasswd`. Blok `<Location "/admin">` mewajibkan login untuk semua akses ke `/admin`, dan `Require valid-user` hanya mengizinkan user yang ada di file tersebut.
+
+Kemudian siapkan halaman tujuan di Obladi
+```bash
+mkdir -p /var/www/html/admin
+echo "Halaman Admin Vault - obladi" > /var/www/html/admin/index.html
+```
+Lalu di Desmond
+```bash
+mkdir -p /var/www/html/admin
+echo "Halaman Admin Vault - desmond" > /var/www/html/admin/index.html
+```
+Halaman ini disiapkan supaya setelah berhasil login, pengunjung melihat isi halaman admin dari vault, bukan error 404.
+
+Terakhir lakukan testing di node Alpha
+```bash
+curl -sI http://www.k19.com/admin/ | head -1
+curl -sI -u 'prabs:pakar_pinter_jadi_gob***' http://www.k19.com/admin/ | head -1
+curl -sI -u 'prabs:salah' http://www.k19.com/admin/ | head -1
+```
+![img](assets/soal_12.png)
 ## Soal 13
+Meminta semua akses ke Penny dialihkan permanen ke www, dan semua akses ke Abbey dialihkan sementara ke static
+Pertama lakukan konfigurasi di Penny (Apache2)
+```bash
+cat << 'XEOF' > /etc/apache2/sites-available/00-redirect.conf
+<VirtualHost *:80>
+    ServerName penny.k19.com
+    Redirect permanent / http://www.k19.com/
+</VirtualHost>
+XEOF
+
+a2ensite 00-redirect
+apachectl configtest
+service apache2 restart
+```
+Kemudian lakukan konfigurasi di Abbey (Nginx)
+```bash
+cat << 'XEOF' > /etc/nginx/sites-available/reverse-proxy
+upstream core {
+    server 10.73.10.6:80;
+    server 10.73.10.7:80;
+}
+
+server {
+    listen 80 default_server;
+    server_name abbey.k19.com _;
+    return 302 http://static.k19.com$request_uri;
+}
+
+server {
+    listen 80;
+    server_name static.k19.com;
+
+    location / {
+        proxy_pass http://core;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+XEOF
+
+nginx -t
+nginx -s reload
+```
+Terakhir lakukan testing di node Alpha
+```bash
+curl -I http://10.73.30.2/
+curl -I http://penny.k19.com/
+curl -I http://10.73.20.2/
+curl -I http://abbey.k19.com/
+```
+![img](assets/soal_13.png)
+![img](assets/soal_13-2.png)
 ## Soal 14
+Meminta log di server backend mencatat IP asli pengunjung, bukan IP proxy.
+Pertama lakukan konfigurasi di Obladi dan Desmond (Apache2)
+```bash
+a2enmod remoteip
+
+cat << 'XEOF' > /etc/apache2/conf-available/remoteip.conf
+RemoteIPHeader X-Real-IP
+RemoteIPInternalProxy 10.73.30.2
+XEOF
+a2enconf remoteip
+
+if ! grep -rqs "proxy.log" /etc/apache2/sites-enabled /etc/apache2/conf-enabled; then
+cat << 'XEOF' > /etc/apache2/conf-available/proxylog.conf
+LogFormat "%a host=%{Host}i real=%{X-Real-IP}i xff=%{X-Forwarded-For}i" proxylog
+CustomLog ${APACHE_LOG_DIR}/proxy.log proxylog
+XEOF
+a2enconf proxylog
+fi
+
+apachectl configtest
+service apache2 restart
+```
+Kemudian lakukan konfigurasi di Oblada dan Molly (Nginx)
+```bash
+# Cek dulu isi aslinya: cat /etc/nginx/sites-available/default
+cat << 'XEOF' > /etc/nginx/conf.d/proxylog.conf
+log_format proxylog '$remote_addr host=$host real=$http_x_real_ip xff=$http_x_forwarded_for';
+XEOF
+
+cat << 'XEOF' > /etc/nginx/sites-available/default
+server {
+    listen 80 default_server;
+    root /var/www/html;
+    index index.php index.html;
+
+    set_real_ip_from 10.73.20.2;
+    real_ip_header X-Real-IP;
+    access_log /var/log/nginx/access.log;
+    access_log /var/log/nginx/proxy.log proxylog;
+
+    location = /profil {
+        rewrite ^ /profil.php last;
+    }
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+    }
+}
+XEOF
+
+nginx -t
+service nginx restart
+```
+Terakhir lakukan testing di node Alpha, lalu cek log di backend
+```bash
+# Alpha
+curl -s -o /dev/null http://www.k19.com/arsip/
+curl -s -o /dev/null http://static.k19.com/profil
+
+# Obladi dan Desmond
+tail -n 3 /var/log/apache2/access.log
+tail -n 3 /var/log/apache2/proxy.log
+
+# Oblada dan Molly
+tail -n 3 /var/log/nginx/access.log
+tail -n 3 /var/log/nginx/proxy.log
+```
+![img](assets/soal_14.png)
+![img]()
 ## Soal 15
+Meminta dua jalur khusus. Di Penny ada /eternal yang bisa menjalankan PHP, dan di Abbey ada /orion yang murni statis.
+Pertama lakukan konfigurasi di Penny (Apache2 + PHP-FPM)
+```bash
+apt install php8.4-fpm -y -o Acquire::ForceIPv4=true
+a2enmod proxy_fcgi
+
+mkdir -p /var/www/eternal
+cat << 'XEOF' > /var/www/eternal/index.php
+<?php echo "Eternal - PHP aktif, versi " . PHP_VERSION . "\n"; ?>
+XEOF
+
+cat << 'XEOF' > /etc/apache2/sites-available/10-www.conf
+<VirtualHost *:80>
+    ServerName www.k19.com
+
+    ProxyRequests Off
+    ProxyPreserveHost On
+    RequestHeader set X-Real-IP expr=%{REMOTE_ADDR}
+
+    Alias /eternal /var/www/eternal
+    <Directory /var/www/eternal>
+        Options -Indexes +FollowSymLinks
+        AllowOverride None
+        Require all granted
+        DirectoryIndex index.php index.html
+        <FilesMatch "\.php$">
+            SetHandler "proxy:unix:/run/php/php8.4-fpm.sock|fcgi://localhost"
+        </FilesMatch>
+    </Directory>
+
+    <Location "/admin">
+        AuthType Basic
+        AuthName "Admin Area"
+        AuthUserFile /etc/apache2/.htpasswd
+        Require valid-user
+    </Location>
+
+    <Proxy "balancer://vault">
+        BalancerMember http://10.73.10.4:80
+        BalancerMember http://10.73.10.5:80
+        ProxySet lbmethod=byrequests
+    </Proxy>
+
+    ProxyPass        "/eternal" "!"
+    ProxyPass        "/" "balancer://vault/"
+    ProxyPassReverse "/" "balancer://vault/"
+</VirtualHost>
+XEOF
+
+php-fpm8.4 -D
+apachectl configtest
+service apache2 restart
+```
+Kemudian lakukan konfigurasi di Abbey (Nginx)
+```bash
+mkdir -p /var/www/orion
+echo "Orion - halaman statis" > /var/www/orion/index.html
+echo '<?php echo "PHP TIDAK boleh dieksekusi di sini\n"; ?>' > /var/www/orion/test.php
+
+cat << 'XEOF' > /etc/nginx/sites-available/reverse-proxy
+upstream core {
+    server 10.73.10.6:80;
+    server 10.73.10.7:80;
+}
+
+server {
+    listen 80 default_server;
+    server_name abbey.k19.com _;
+    return 302 http://static.k19.com$request_uri;
+}
+
+server {
+    listen 80;
+    server_name static.k19.com;
+
+    location = /orion { return 301 /orion/; }
+    location /orion/ {
+        alias /var/www/orion/;
+        index index.html;
+    }
+
+    location / {
+        proxy_pass http://core;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+XEOF
+
+nginx -t
+nginx -s reload
+```
+Terakhir lakukan testing di node Alpha
+```bash
+curl -s http://www.k19.com/eternal/ | head -3
+curl -i http://static.k19.com/orion/
+curl -i http://static.k19.com/orion/test.php
+```
+![img](assets/soal15.png)
 ## Soal 16
+Meminta uji beban memakai ApacheBench dari Alpha: 250 request dengan 10 sekaligus, ke www dan static. Tujuannya melihat apakah reverse proxy kita tetap stabil saat banyak pengunjung."
+Lakukan di node Alpha
+```bash
+apt install apache2-utils -y -o Acquire::ForceIPv4=true
+ab -n 250 -c 10 http://www.k19.com/
+ab -n 250 -c 10 http://static.k19.com/
+```
+![img](assets/soal_16.png)
+![img](assets/soal_16-2.png)
 ## Soal 17
+Meminta DNS menjawab query TXT untuk node klien dengan nama host-nya masing-masing.
+Lakukan konfigurasi di Prab
+```bash
+ZONE=/etc/bind/jarkom/k19.com
+for h in alpha beta gamma delta epsilon; do
+  sed -i -E "/^${h}[[:space:]]+IN[[:space:]]+TXT/d" $ZONE
+  echo "${h}   IN      TXT     \"${h}\"" >> $ZONE
+done
+sleep 1
+CUR=$(grep -m1 ';[[:space:]]*Serial' $ZONE | awk '{print $1}')
+NEW=$(date +%y%m%d%H%M)
+[ "$NEW" -le "$CUR" ] && NEW=$((CUR+1))
+sed -i -E "s/^([[:space:]]*)${CUR}([[:space:]]*;[[:space:]]*Serial)/\1${NEW}\2/" $ZONE
+chown -R bind:bind /etc/bind/jarkom
+named-checkzone k19.com $ZONE
+rndc reload k19.com > /dev/null 2>&1 || { pkill named; sleep 1; named -u bind; sleep 1; }
+rndc notify k19.com > /dev/null 2>&1
+sleep 3
+```
+Terakhir lakukan testing di node Alpha
+```bash
+for h in alpha beta gamma delta epsilon; do dig TXT $h.k19.com +short; done
+```
+![img](assets/soal_17.png)
 ## Soal 18
+Membuktikan cara kerja cache dan TTL di DNS. Kita ubah IP abbey ke IP palsu, lalu lihat bahwa jawaban DNS tidak langsung berubah selama TTL 15 detik masih berlaku
+Lakukan di Prab
+```bash
+apt update -o Acquire::ForceIPv4=true
+apt install dnsmasq -y -o Acquire::ForceIPv4=true
+
+ZONE=/etc/bind/jarkom/k19.com
+IP_LAMA=10.73.20.2
+IP_BARU=10.73.99.99
+
+naik_serial() {
+  CUR=$(grep -m1 ';[[:space:]]*Serial' $ZONE | awk '{print $1}')
+  NEW=$(date +%y%m%d%H%M)
+  [ "$NEW" -le "$CUR" ] && NEW=$((CUR+1))
+  sed -i -E "s/^([[:space:]]*)${CUR}([[:space:]]*;[[:space:]]*Serial)/\1${NEW}\2/" $ZONE
+}
+
+reload_zona() {
+  named-checkzone k19.com $ZONE
+  rndc reload k19.com > /dev/null 2>&1 || { pkill named; sleep 1; named -u bind; sleep 1; }
+  rndc notify k19.com > /dev/null 2>&1
+  sleep 2
+}
+
+# Resolver cache lokal (prab authoritative, jadi cache dibuat dengan dnsmasq port 5353)
+pkill dnsmasq 2>/dev/null; sleep 1
+dnsmasq --conf-file=/dev/null --port=5353 --listen-address=127.0.0.1 \
+  --bind-interfaces --no-resolv --no-hosts --server=127.0.0.1#53 --cache-size=500
+
+# TTL 15 detik dengan IP lama
+sed -i -E "s/^abbey[[:space:]].*/abbey   15      IN      A       ${IP_LAMA}/" $ZONE
+naik_serial
+reload_zona
+
+echo "=== KONDISI 1: sebelum perubahan (harus IP lama $IP_LAMA) ==="
+dig @127.0.0.1 -p 5353 abbey.k19.com +noall +answer
+T0=$(date +%s)
+
+echo ""
+echo ">>> Mengubah abbey.k19.com menjadi $IP_BARU (TTL 15 detik)"
+sed -i -E "s/^abbey[[:space:]].*/abbey   15      IN      A       ${IP_BARU}/" $ZONE
+naik_serial
+reload_zona
+
+echo ""
+echo "=== KONDISI 2: jeda < 15 detik (harus MASIH IP lama karena cache) ==="
+echo "Selisih sejak cache terisi: $(( $(date +%s) - T0 )) detik"
+dig @127.0.0.1 -p 5353 abbey.k19.com +noall +answer
+
+echo ""
+echo "=== SINKRONISASI TEDD ==="
+SPRAB=$(dig @10.73.10.2 k19.com SOA +short | awk '{print $3}')
+STEDD=$(dig @10.73.10.3 k19.com SOA +short | awk '{print $3}')
+echo "Serial prab: $SPRAB | Serial tedd: $STEDD"
+echo "abbey di tedd: $(dig @10.73.10.3 abbey.k19.com +short)"
+
+# Tunggu sampai TTL habis (>= 16 detik sejak cache terisi)
+SISA=$(( 16 - ( $(date +%s) - T0 ) ))
+[ "$SISA" -gt 0 ] && sleep $SISA
+
+echo ""
+echo "=== KONDISI 3: setelah TTL 15 detik habis (harus IP fiktif $IP_BARU) ==="
+echo "Selisih sejak cache terisi: $(( $(date +%s) - T0 )) detik"
+dig @127.0.0.1 -p 5353 abbey.k19.com +noall +answer
+
+pkill dnsmasq
+```
+Setelah pengujian, kembalikan A record abbey ke IP normal (di Prab)
+```bash
+ZONE=/etc/bind/jarkom/k19.com
+sed -i -E "s/^abbey[[:space:]].*/abbey   IN      A       10.73.20.2/" $ZONE
+sleep 1
+CUR=$(grep -m1 ';[[:space:]]*Serial' $ZONE | awk '{print $1}')
+NEW=$(date +%y%m%d%H%M)
+[ "$NEW" -le "$CUR" ] && NEW=$((CUR+1))
+sed -i -E "s/^([[:space:]]*)${CUR}([[:space:]]*;[[:space:]]*Serial)/\1${NEW}\2/" $ZONE
+named-checkzone k19.com $ZONE
+rndc reload k19.com > /dev/null 2>&1 || { pkill named; sleep 1; named -u bind; sleep 1; }
+rndc notify k19.com > /dev/null 2>&1
+sleep 3
+echo -n "prab: "; dig @10.73.10.2 abbey.k19.com +short
+echo -n "tedd: "; dig @10.73.10.3 abbey.k19.com +short
+```
+Terakhir lakukan testing di node Alpha
+```bash
+dig abbey.k19.com +short
+curl -I http://abbey.k19.com/
+```
+![img](soal_18.png)
+![img]()
 ## Soal 19
+Meminta nama internal outbound.k19.com dibuat sebagai alias ke domain di internet, yaitu http.badssl.com. J
+Lakukan konfigurasi di Prab
+```bash
+ZONE=/etc/bind/jarkom/k19.com
+sed -i -E '/^outbound[[:space:]]/d' $ZONE
+echo "outbound        IN      CNAME   http.badssl.com." >> $ZONE
+sleep 1
+CUR=$(grep -m1 ';[[:space:]]*Serial' $ZONE | awk '{print $1}')
+NEW=$(date +%y%m%d%H%M)
+[ "$NEW" -le "$CUR" ] && NEW=$((CUR+1))
+sed -i -E "s/^([[:space:]]*)${CUR}([[:space:]]*;[[:space:]]*Serial)/\1${NEW}\2/" $ZONE
+named-checkzone k19.com $ZONE
+rndc reload k19.com > /dev/null 2>&1 || { pkill named; sleep 1; named -u bind; sleep 1; }
+rndc notify k19.com > /dev/null 2>&1
+sleep 3
+echo -n "Serial prab: "; dig @10.73.10.2 k19.com SOA +short | awk '{print $3}'
+echo -n "Serial tedd: "; dig @10.73.10.3 k19.com SOA +short | awk '{print $3}'
+dig @10.73.10.2 outbound.k19.com +short
+dig @10.73.10.3 outbound.k19.com +short
+```
+Terakhir lakukan testing di node Alpha
+```bash
+dig outbound.k19.com +short
+curl -I http://outbound.k19.com/
+curl -s http://outbound.k19.com/ | grep -i title
+curl -s -H "Host: http.badssl.com" http://outbound.k19.com/ | grep -i title
+curl -s -H "Host: http.badssl.com" http://outbound.k19.com/
+```
+![img](assets/soal_18-3.png)
 ## Soal 20
+Meminta semua service dan aturan NAT berjalan otomatis setelah node di-restart.
+Pertama lakukan konfigurasi di Prab
+```bash
+cat << 'XEOF' > /root/init.sh
+#!/bin/bash
+# prab - autostart BIND9
+pgrep -x named > /dev/null || named -u bind
+XEOF
+chmod +x /root/init.sh
+```
+Kemudian di Tedd
+```bash
+cat << 'XEOF' > /root/init.sh
+#!/bin/bash
+# tedd - autostart BIND9
+pgrep -x named > /dev/null || named -u bind
+XEOF
+chmod +x /root/init.sh
+```
+Lalu di Obladi dan Desmond
+```bash
+cat << 'XEOF' > /root/init.sh
+#!/bin/bash
+# vault - autostart Apache2
+pgrep -x apache2 > /dev/null || service apache2 start
+XEOF
+chmod +x /root/init.sh
+```
+Di Penny
+```bash
+cat << 'XEOF' > /root/init.sh
+#!/bin/bash
+# penny - autostart PHP-FPM + Apache2
+pgrep -x php-fpm8.4 > /dev/null || php-fpm8.4 -D
+pgrep -x apache2 > /dev/null || service apache2 start
+XEOF
+chmod +x /root/init.sh
+```
+Di Oblada dan Molly
+```bash
+cat << 'XEOF' > /root/init.sh
+#!/bin/bash
+# core - autostart PHP-FPM + Nginx
+pgrep -x php-fpm8.4 > /dev/null || php-fpm8.4 -D
+pgrep -x nginx > /dev/null || nginx
+XEOF
+chmod +x /root/init.sh
+```
+Di Abbey
+```bash
+cat << 'XEOF' > /root/init.sh
+#!/bin/bash
+# abbey - autostart Nginx
+pgrep -x nginx > /dev/null || nginx
+XEOF
+chmod +x /root/init.sh
+```
+Di Rootkit
+```bash
+cat << 'XEOF' > /root/init.sh
+#!/bin/bash
+# rootkit - IP gateway + routing + NAT (idempotent)
+for i in 0 1 2 3 4 5; do ip link set eth$i up; done
+ip addr add 10.73.10.1/24 dev eth1 2>/dev/null || true
+ip addr add 10.73.20.1/24 dev eth2 2>/dev/null || true
+ip addr add 10.73.30.1/24 dev eth3 2>/dev/null || true
+ip addr add 10.73.40.1/24 dev eth4 2>/dev/null || true
+ip addr add 10.73.50.1/24 dev eth5 2>/dev/null || true
+
+echo 1 > /proc/sys/net/ipv4/ip_forward
+iptables -t nat -C POSTROUTING -o eth0 -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+iptables -C FORWARD -j ACCEPT 2>/dev/null || iptables -A FORWARD -j ACCEPT
+XEOF
+chmod +x /root/init.sh
+```
+Pengembalian A record abbey ke IP normal (di Prab)
+```bash
+ZONE=/etc/bind/jarkom/k19.com
+sed -i -E "s/^abbey[[:space:]].*/abbey   IN      A       10.73.20.2/" $ZONE
+sleep 1
+CUR=$(grep -m1 ';[[:space:]]*Serial' $ZONE | awk '{print $1}')
+NEW=$(date +%y%m%d%H%M)
+[ "$NEW" -le "$CUR" ] && NEW=$((CUR+1))
+sed -i -E "s/^([[:space:]]*)${CUR}([[:space:]]*;[[:space:]]*Serial)/\1${NEW}\2/" $ZONE
+named-checkzone k19.com $ZONE
+rndc reload k19.com > /dev/null 2>&1 || { pkill named; sleep 1; named -u bind; sleep 1; }
+rndc notify k19.com > /dev/null 2>&1
+sleep 3
+echo -n "prab: "; dig @10.73.10.2 abbey.k19.com +short
+echo -n "tedd: "; dig @10.73.10.3 abbey.k19.com +short
+```
+Terakhir lakukan pengujian setelah setiap node di-restart
+```bash
+# Prab dan Tedd
+pgrep -a named; dig @127.0.0.1 k19.com SOA +short
+# Obladi, Desmond, Penny
+pgrep -a apache2 | head -2
+# Penny, Oblada, Molly
+pgrep -a php-fpm | head -2
+# Oblada, Molly, Abbey
+pgrep -a nginx | head -2
+# Rootkit
+cat /proc/sys/net/ipv4/ip_forward; iptables -t nat -L POSTROUTING -n
+
+# Alpha
+dig abbey.k19.com +short
+dig outbound.k19.com +short
+curl -I http://www.k19.com/
+curl -I http://abbey.k19.com/
+curl -s http://www.k19.com/eternal/ | head -3
+curl -I http://http.badssl.com/
+```

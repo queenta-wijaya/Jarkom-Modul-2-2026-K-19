@@ -345,6 +345,12 @@ zone "k19.com" {
 };
 EOF
 
+cat << 'EOF' > /etc/resolv.conf
+nameserver 10.73.10.2
+nameserver 10.73.10.3
+nameserver 192.168.122.1
+EOF
+
 service named restart
 ```
 Terakhir lakukan konfigurasi dan pengujian dari non-router lain (contoh: alpha)

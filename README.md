@@ -1212,7 +1212,6 @@ dig abbey.k19.com +short
 curl -I http://abbey.k19.com/
 ```
 ![img](soal_18.png)
-![img]()
 ## Soal 19
 Meminta nama internal outbound.k19.com dibuat sebagai alias ke domain di internet, yaitu http.badssl.com. J
 Lakukan konfigurasi di Prab
@@ -1356,3 +1355,7 @@ curl -I http://abbey.k19.com/
 curl -s http://www.k19.com/eternal/ | head -3
 curl -I http://http.badssl.com/
 ```
+<<<<<<< HEAD
+=======
+![img](assets/soal_20.png)
+>>>>>>> 424737c (add laporan)
